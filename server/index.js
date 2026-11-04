@@ -31,6 +31,10 @@ function generateCode() {
   return code;
 }
 
+function getRoomUsers(room) {
+  return Array.from(room.users.values()).map(u => ({ id: u.id, name: u.name }));
+}
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', rooms: rooms.size, message: 'No data is stored. Ephemeral only.' });
 });
@@ -60,13 +64,24 @@ io.on('connection', (socket) => {
     socket.username = user.name;
 
     console.log(`Room ${code} created by ${user.name}`);
-    callback({ success: true, code, roomId, userId: socket.id });
-    
-    // Notify room (only this user for now)
+
+    const users = getRoomUsers(room);
+
+    // Send full state in the callback so client has users immediately
+    callback({
+      success: true,
+      code,
+      roomId,
+      userId: socket.id,
+      users,
+      userCount: users.length
+    });
+
+    // Also broadcast (for consistency)
     io.to(code).emit('room-update', {
       code,
-      userCount: room.users.size,
-      users: Array.from(room.users.values()).map(u => ({ id: u.id, name: u.name }))
+      userCount: users.length,
+      users
     });
   });
 
@@ -76,21 +91,47 @@ io.on('connection', (socket) => {
       return callback({ success: false, error: 'Room not found or expired' });
     }
 
+    // Prevent duplicate join from same socket
+    if (room.users.has(socket.id)) {
+      const users = getRoomUsers(room);
+      return callback({
+        success: true,
+        code,
+        roomId: room.id,
+        userId: socket.id,
+        users,
+        userCount: users.length
+      });
+    }
+
     const user = { id: socket.id, name: username || 'Anonymous', joinedAt: Date.now() };
     room.users.set(socket.id, user);
     socket.join(code);
     socket.roomCode = code;
     socket.username = user.name;
 
-    console.log(`${user.name} joined room ${code}`);
-    callback({ success: true, code, roomId: room.id, userId: socket.id });
+    console.log(`${user.name} joined room ${code} (${room.users.size} online)`);
 
-    // Notify others that someone joined (no history shared)
+    const users = getRoomUsers(room);
+
+    // Critical: send current users list in the callback
+    callback({
+      success: true,
+      code,
+      roomId: room.id,
+      userId: socket.id,
+      users,
+      userCount: users.length
+    });
+
+    // Notify others
     socket.to(code).emit('user-joined', { id: user.id, name: user.name });
+
+    // Broadcast updated list to everyone in the room
     io.to(code).emit('room-update', {
       code,
-      userCount: room.users.size,
-      users: Array.from(room.users.values()).map(u => ({ id: u.id, name: u.name }))
+      userCount: users.length,
+      users
     });
   });
 
@@ -100,7 +141,7 @@ io.on('connection', (socket) => {
     const code = socket.roomCode;
     if (!code || !rooms.has(code)) return;
 
-    // Broadcast only. Never store.
+    // Only relay to others. Never store. Never send history.
     socket.to(code).emit('receive-message', {
       ciphertext,
       iv,
@@ -143,10 +184,11 @@ function leaveRoom(socket) {
     rooms.delete(code);
     console.log(`Room ${code} destroyed (empty)`);
   } else {
+    const users = getRoomUsers(room);
     io.to(code).emit('room-update', {
       code,
-      userCount: room.users.size,
-      users: Array.from(room.users.values()).map(u => ({ id: u.id, name: u.name }))
+      userCount: users.length,
+      users
     });
   }
   socket.leave(code);
@@ -154,7 +196,7 @@ function leaveRoom(socket) {
   delete socket.username;
 }
 
-// Cleanup old empty-ish rooms every 10 min (safety)
+// Cleanup old empty rooms every 10 min
 setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms.entries()) {

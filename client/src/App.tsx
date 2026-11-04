@@ -73,8 +73,8 @@ function App() {
       senderName: string
       timestamp: number
     }) => {
-      // Only accept messages that arrive AFTER we joined.
-      // No history is ever sent by the server.
+      // Only messages that arrive AFTER we joined are shown.
+      // Server never sends history.
       const text = await decryptMessage(payload.ciphertext, payload.iv, roomCode)
       const msg: Message = {
         id: crypto.randomUUID(),
@@ -89,12 +89,12 @@ function App() {
 
     socket.on('receive-message', onReceive)
 
-    socket.on('room-update', (data: { users: RoomUser[] }) => {
-      setUsers(data.users)
+    socket.on('room-update', (data: { users: RoomUser[]; userCount: number }) => {
+      setUsers(data.users || [])
     })
 
     socket.on('user-joined', () => {
-      // Do nothing — we never re-send old messages
+      // Do nothing with messages — we never re-send history
     })
 
     socket.on('user-left', () => {})
@@ -123,6 +123,8 @@ function App() {
         setUserId(res.userId)
         setRoomCode(res.code)
         setMessages([]) // always start empty
+        // Immediately set users from the response (includes yourself)
+        setUsers(res.users || [{ id: res.userId, name }])
       }
     })
   }, [socket])
@@ -135,6 +137,8 @@ function App() {
         setUserId(res.userId)
         setRoomCode(code)
         setMessages([]) // LATE JOINERS ALWAYS START WITH EMPTY CHAT
+        // Immediately show who is currently in the room
+        setUsers(res.users || [])
       } else {
         alert(res.error || 'Failed to join')
       }
